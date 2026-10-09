@@ -119,16 +119,17 @@ class SERGRPOPipeline:
         class_weights = compute_emotion_weights(
             train_set, power=self.config.reward.smoothing_power
         )
-        from src.rewards.acoustic import CUE_FEATURE_MAP, compute_top_speaker_acoustic_quantiles
+        from src.rewards.acoustic import (
+            ALL_ACOUSTIC_FEATURES,
+            build_acoustic_audio_lookup,
+            compute_top_speaker_acoustic_quantiles,
+        )
 
         speaker_quantiles = compute_top_speaker_acoustic_quantiles(
-            raw_train_set, top_n=6
+            raw_train_set, top_n=6, cues_map=ALL_ACOUSTIC_FEATURES
         )
-        audio_lookup = (
-            raw_train_set.set_index("audio_path")[
-                [c for c in list(CUE_FEATURE_MAP.values()) + ["speaker"] if c in raw_train_set.columns]
-            ].to_dict(orient="index")
-            if "audio_path" in raw_train_set.columns else {}
+        audio_lookup = build_acoustic_audio_lookup(
+            raw_train_set, features_map=ALL_ACOUSTIC_FEATURES
         )
         reward_manager = RewardManager(
             class_weights=class_weights,
