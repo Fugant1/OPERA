@@ -1,167 +1,244 @@
 """R2: Acoustic Inventory physical grounding reward.
 
 Evaluates whether the discrete acoustic cues generated during Chain-of-Thought
-reasoning accurately ground to empirical physical eGeMAPS functionals.
+reasoning accurately ground to empirical physical eGeMAPS functionals using
+speaker-calibrated quartiles for the top speakers.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from src.rewards.parser import extract_acoustic_inventory
 from src.utils.logging import get_logger
 
 logger = get_logger("rewards.acoustic")
 
-# Literature-derived acoustic profiles for speech emotions (Scherer et al., Juslin et al.)
-PHONETIC_PROFILES: Dict[str, Dict[str, List[str]]] = {
-    "anger": {
-        "pitch_height": ["elevated"],
-        "pitch_dynamics": ["wide", "moderate"],
-        "vocal_energy": ["loud"],
-        "speaking_rate": ["fast", "moderate"],
-        "voice_quality": ["pressed/tense", "harsh/creaky"],
+# Mapping of the 4 continuous acoustic descriptors in the prompt to eGeMAPSv02 features
+CUE_FEATURE_MAP: Dict[str, str] = {
+    "pitch_height": "F0semitoneFrom27.5Hz_sma3nz_amean",
+    "pitch_dynamics": "F0semitoneFrom27.5Hz_sma3nz_pctlrange0-2",
+    "vocal_energy": "loudness_sma3_percentile50.0",
+    "speaking_rate": "VoicedSegmentsPerSec",
+}
+
+# Normalization of prompt vocabulary to the 3 ordinal tiers (low, moderate, high)
+PRED_TIER_MAP: Dict[str, Dict[str, str]] = {
+    "pitch_height": {
+        "low": "low",
+        "moderate": "moderate",
+        "elevated": "high",
+        "high": "high",
     },
-    "joy": {
-        "pitch_height": ["elevated", "moderate"],
-        "pitch_dynamics": ["wide"],
-        "vocal_energy": ["loud", "moderate"],
-        "speaking_rate": ["fast", "moderate"],
-        "voice_quality": ["modal/normal", "breathy"],
+    "pitch_dynamics": {
+        "narrow": "low",
+        "low": "low",
+        "moderate": "moderate",
+        "wide": "high",
+        "high": "high",
     },
-    "sadness": {
-        "pitch_height": ["low", "moderate"],
-        "pitch_dynamics": ["narrow"],
-        "vocal_energy": ["quiet"],
-        "speaking_rate": ["slow"],
-        "voice_quality": ["breathy", "modal/normal"],
+    "vocal_energy": {
+        "quiet": "low",
+        "low": "low",
+        "moderate": "moderate",
+        "loud": "high",
+        "high": "high",
     },
-    "fear": {
-        "pitch_height": ["elevated"],
-        "pitch_dynamics": ["wide", "narrow"],
-        "vocal_energy": ["moderate", "loud"],
-        "speaking_rate": ["fast"],
-        "voice_quality": ["breathy", "pressed/tense"],
-    },
-    "disgust": {
-        "pitch_height": ["low", "moderate"],
-        "pitch_dynamics": ["narrow", "moderate"],
-        "vocal_energy": ["moderate", "quiet"],
-        "speaking_rate": ["slow", "moderate"],
-        "voice_quality": ["harsh/creaky", "pressed/tense"],
-    },
-    "surprise": {
-        "pitch_height": ["elevated"],
-        "pitch_dynamics": ["wide"],
-        "vocal_energy": ["loud", "moderate"],
-        "speaking_rate": ["fast", "moderate"],
-        "voice_quality": ["modal/normal", "breathy"],
-    },
-    "neutral": {
-        "pitch_height": ["moderate"],
-        "pitch_dynamics": ["moderate", "narrow"],
-        "vocal_energy": ["moderate"],
-        "speaking_rate": ["moderate"],
-        "voice_quality": ["modal/normal"],
+    "speaking_rate": {
+        "slow": "low",
+        "low": "low",
+        "moderate": "moderate",
+        "fast": "high",
+        "high": "high",
     },
 }
 
 
-class AcousticInventoryReward:
-    """Computes physical acoustic consistency reward in [0.0, 1.0].
+def compute_top_speaker_acoustic_quantiles(
+    df: Any,
+    top_n: int = 6,
+    cues_map: Dict[str, str] = CUE_FEATURE_MAP,
+) -> Dict[str, Dict[str, Dict[str, float]]]:
+    """Computes the 4 quantiles (quartiles: Q25 and Q75) for the top N most frequent speakers.
 
-    Can operate in two complementary modes:
-    1. Direct physical grounding: compares predicted discrete cues against
-       empirical eGeMAPS quantiles (Q33 and Q66 thresholds).
-    2. Phonetic coherence: compares predicted discrete cues against target emotion
-       acoustic literature profiles.
+    Quantile divisions:
+      - 1st quantile (x <= Q25): Low
+      - 2nd & 3rd quantiles (Q25 < x <= Q75): Moderate
+      - 4th quantile (x > Q75): High
+
+    Includes '__GLOBAL__' as fallback for speakers outside top N.
     """
+    spk_counts = df["speaker"].value_counts()
+    top_speakers = spk_counts.head(top_n).index.tolist()
+
+    quantiles_dict: Dict[str, Dict[str, Dict[str, float]]] = {}
+
+    for spk in top_speakers:
+        sub = df[df["speaker"] == spk]
+        quantiles_dict[spk] = {}
+        for cue_name, col_name in cues_map.items():
+            if col_name in sub.columns:
+                series = sub[col_name].dropna()
+                if len(series) > 0:
+                    quantiles_dict[spk][cue_name] = {
+                        "q25": float(series.quantile(0.25)),
+                        "q75": float(series.quantile(0.75)),
+                    }
+
+    # Global fallback for speakers with few utterances or out-of-top-N
+    quantiles_dict["__GLOBAL__"] = {}
+    for cue_name, col_name in cues_map.items():
+        if col_name in df.columns:
+            series = df[col_name].dropna()
+            if len(series) > 0:
+                quantiles_dict["__GLOBAL__"][cue_name] = {
+                    "q25": float(series.quantile(0.25)),
+                    "q75": float(series.quantile(0.75)),
+                }
+
+    logger.info("Computed acoustic quartiles for top %d speakers: %s", len(top_speakers), top_speakers)
+    return quantiles_dict
+
+
+def score_acoustic_piece(truth_tier: str, pred_tier: Optional[str]) -> float:
+    """Computes the reward score for an individual acoustic dimension according to the payoff matrix:
+
+      - Truth High/Low ; Predicted High/Low -> +1.0
+      - Truth High/Low ; Predicted Moderate -> +0.0
+      - Truth Moderate ; Predicted Moderate -> +0.5
+      - Truth High     ; Predicted Low      -> -1.0
+      - Truth Low      ; Predicted High     -> -1.0
+      - Truth Moderate ; Predicted High/Low -> 0.0
+      - Predicted Missing / None            -> -1.0
+    """
+    if pred_tier is None:
+        return -1.0
+
+    t = truth_tier.lower()
+    p = pred_tier.lower()
+
+    if t in ("high", "low"):
+        if p == t:
+            return 1.0
+        elif p == "moderate":
+            return 0.0
+        else:
+            return -1.0
+    elif t == "moderate":
+        if p == "moderate":
+            return 0.5
+        else:
+            return 0.0
+
+    return 0.0
+
+
+class AcousticInventoryReward:
+    """R2 Reward function evaluating Acoustic Inventory grounding against speaker quartiles."""
 
     def __init__(
         self,
-        quantiles_ref: Optional[Dict[str, Dict[str, float]]] = None,
-        weight_per_cue: float = 0.20,
+        quantiles_ref: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
+        audio_lookup: Optional[Dict[str, Dict[str, Any]]] = None,
+        normalize: bool = False,
     ):
         self.quantiles_ref = quantiles_ref or {}
-        self.weight_per_cue = weight_per_cue
+        self.audio_lookup = audio_lookup or {}
+        self.normalize = normalize
 
-    def _score_single(
-        self,
-        parsed_inventory: Dict[str, Optional[str]],
-        target_emotion: Optional[str] = None,
-        f0_val: Optional[float] = None,
-        loudness_val: Optional[float] = None,
-        rate_val: Optional[float] = None,
-    ) -> float:
-        """Score a single rollout's acoustic inventory."""
-        score = 0.0
+    def set_quantiles(self, quantiles_ref: Dict[str, Dict[str, Dict[str, float]]]) -> None:
+        """Update active speaker quantiles reference."""
+        self.quantiles_ref = quantiles_ref
 
-        # Mode A: Grounded against continuous eGeMAPS values if available
-        if f0_val is not None and "Pitch Height (st)" in self.quantiles_ref:
-            q_f0 = self.quantiles_ref["Pitch Height (st)"]
-            expected_f0 = (
-                "low" if f0_val < q_f0.get("Q33", 25.0)
-                else ("elevated" if f0_val > q_f0.get("Q66", 35.0) else "moderate")
-            )
-            if parsed_inventory.get("pitch_height") == expected_f0:
-                score += self.weight_per_cue
-
-        if loudness_val is not None and "Vocal Energy (Sones)" in self.quantiles_ref:
-            q_loud = self.quantiles_ref["Vocal Energy (Sones)"]
-            expected_loud = (
-                "quiet" if loudness_val < q_loud.get("Q33", 0.3)
-                else ("loud" if loudness_val > q_loud.get("Q66", 0.7) else "moderate")
-            )
-            if parsed_inventory.get("vocal_energy") == expected_loud:
-                score += self.weight_per_cue
-
-        if rate_val is not None and "Speaking Rate (seg/s)" in self.quantiles_ref:
-            q_rate = self.quantiles_ref["Speaking Rate (seg/s)"]
-            expected_rate = (
-                "slow" if rate_val < q_rate.get("Q33", 2.0)
-                else ("fast" if rate_val > q_rate.get("Q66", 3.5) else "moderate")
-            )
-            if parsed_inventory.get("speaking_rate") == expected_rate:
-                score += self.weight_per_cue
-
-        # Mode B: Fallback or augment with phonetic profile coherence
-        if score == 0.0 and target_emotion and target_emotion in PHONETIC_PROFILES:
-            profile = PHONETIC_PROFILES[target_emotion]
-            matches = 0
-            for cue_key, expected_opts in profile.items():
-                if parsed_inventory.get(cue_key) in expected_opts:
-                    matches += 1
-            score = round(matches * self.weight_per_cue, 3)
-
-        return min(1.0, round(score, 3))
+    def set_audio_lookup(self, audio_lookup: Dict[str, Dict[str, Any]]) -> None:
+        """Update audio_path -> feature cache lookup."""
+        self.audio_lookup = audio_lookup
 
     def __call__(
         self,
         prompts: List[str],
         completions: List[str],
-        label: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> List[float]:
-        """Compute acoustic inventory grounding rewards for rollout batch."""
+        """Compute R2 acoustic inventory rewards for a batch of GRPO rollouts.
+
+        Returns:
+            List of float rewards per completion.
+        """
         rewards: List[float] = []
-        labels = label if label is not None else [None] * len(completions)
 
-        f0_list = kwargs.get("F0semitoneFrom27.5Hz_sma3nz_amean", [None] * len(completions))
-        loud_list = kwargs.get("loudness_sma3_percentile50.0", [None] * len(completions))
-        rate_list = kwargs.get("VoicedSegmentsPerSec", [None] * len(completions))
+        speakers = kwargs.get("speaker", [None] * len(completions))
+        audio_paths = kwargs.get("audio_path", [None] * len(completions))
 
-        for idx, (comp, target) in enumerate(zip(completions, labels)):
-            inventory = extract_acoustic_inventory(comp)
-            f0 = f0_list[idx] if idx < len(f0_list) else None
-            loud = loud_list[idx] if idx < len(loud_list) else None
-            rate = rate_list[idx] if idx < len(rate_list) else None
+        for idx, comp in enumerate(completions):
+            parsed_inv = extract_acoustic_inventory(comp)
 
-            target_norm = str(target).lower().strip() if target else None
-            score = self._score_single(
-                inventory,
-                target_emotion=target_norm,
-                f0_val=f0,
-                loudness_val=loud,
-                rate_val=rate,
+            spk = speakers[idx] if idx < len(speakers) else None
+            audio_p = audio_paths[idx] if idx < len(audio_paths) else None
+
+            lookup_data = self.audio_lookup.get(audio_p, {}) if audio_p else {}
+            if spk is None:
+                spk = lookup_data.get("speaker", "__GLOBAL__")
+
+            spk_q = self.quantiles_ref.get(
+                spk, self.quantiles_ref.get("__GLOBAL__", {})
             )
-            rewards.append(score)
+
+            cue_scores: Dict[str, float] = {}
+
+            for cue_name, feat_col in CUE_FEATURE_MAP.items():
+                val = None
+                if feat_col in kwargs and idx < len(kwargs[feat_col]):
+                    val = kwargs[feat_col][idx]
+                elif feat_col in lookup_data:
+                    val = lookup_data[feat_col]
+
+                if val is None or cue_name not in spk_q:
+                    continue
+
+                q25 = spk_q[cue_name]["q25"]
+                q75 = spk_q[cue_name]["q75"]
+
+                # Physical truth quartile classification
+                if val <= q25:
+                    truth_tier = "low"
+                elif val <= q75:
+                    truth_tier = "moderate"
+                else:
+                    truth_tier = "high"
+
+                # Parse and map model prediction
+                raw_pred = parsed_inv.get(cue_name)
+                pred_tier = None
+                if raw_pred:
+                    raw_clean = str(raw_pred).lower().strip()
+                    pred_tier = PRED_TIER_MAP.get(cue_name, {}).get(raw_clean)
+
+                cue_scores[cue_name] = score_acoustic_piece(truth_tier, pred_tier)
+
+            if cue_scores:
+                total = sum(cue_scores.values())
+                score = (total / len(cue_scores)) if self.normalize else total
+                rewards.append(round(float(score), 3))
+            else:
+                rewards.append(0.0)
 
         return rewards
+
+
+def reward_acoustic_inventory(
+    prompts: List[str],
+    completions: List[str],
+    quantiles_ref: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
+    audio_lookup: Optional[Dict[str, Dict[str, Any]]] = None,
+    normalize: bool = False,
+    **kwargs: Any,
+) -> List[float]:
+    """Functional wrapper for AcousticInventoryReward."""
+    rewarder = AcousticInventoryReward(
+        quantiles_ref=quantiles_ref,
+        audio_lookup=audio_lookup,
+        normalize=normalize,
+    )
+    return rewarder(prompts, completions, **kwargs)

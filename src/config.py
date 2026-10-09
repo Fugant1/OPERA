@@ -99,17 +99,17 @@ class GRPOConfig:
     """Group Relative Policy Optimization (GRPO) training hyperparameters."""
 
     output_dir: Path = Path("./outputs/grpo_experiment")
-    learning_rate: float = 1e-5
+    learning_rate: float = 2e-5
     per_device_train_batch_size: int = 1
-    gradient_accumulation_steps: int = 8
+    gradient_accumulation_steps: int = 4
     num_generations: int = 4
     max_prompt_length: int = 512
     max_completion_length: int = 512
     temperature: float = 0.7
-    kl_penalty: float = 0.05
-    max_steps: int = 500
+    kl_penalty: float = 0.04
+    max_steps: int = 250
     logging_steps: int = 10
-    save_steps: int = 100
+    save_steps: int = 50
     seed: int = 42
 
 

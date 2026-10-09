@@ -119,16 +119,24 @@ class SERGRPOPipeline:
         class_weights = compute_emotion_weights(
             train_set, power=self.config.reward.smoothing_power
         )
-        quantiles_ref = (
-            analysis_results.get("global_summary", {}).to_dict(orient="index")
-            if hasattr(analysis_results.get("global_summary"), "to_dict")
-            else {}
+        from src.rewards.acoustic import CUE_FEATURE_MAP, compute_top_speaker_acoustic_quantiles
+
+        speaker_quantiles = compute_top_speaker_acoustic_quantiles(
+            raw_train_set, top_n=6
+        )
+        audio_lookup = (
+            raw_train_set.set_index("audio_path")[
+                [c for c in list(CUE_FEATURE_MAP.values()) + ["speaker"] if c in raw_train_set.columns]
+            ].to_dict(orient="index")
+            if "audio_path" in raw_train_set.columns else {}
         )
         reward_manager = RewardManager(
-            class_weights=class_weights, quantiles_ref=quantiles_ref
+            class_weights=class_weights,
+            quantiles_ref=speaker_quantiles,
+            audio_lookup=audio_lookup,
         )
 
-        logger.info("Active GRPO reward functions: R1 (Weighted Accuracy), R2 (Acoustic Grounding), R3 (Format)")
+        logger.info("Active GRPO reward functions: R1 (Weighted Accuracy), R2 (Acoustic Inventory Grounding), R3 (Format)")
 
         if not train_model:
             logger.info("Pipeline data preparation, acoustic diagnostics, and reward setup completed successfully.")
