@@ -14,7 +14,7 @@ from src.rewards.acoustic import (
     score_acoustic_piece,
     score_voice_quality_piece,
 )
-from src.rewards.composite import RewardManager
+from src.rewards.composite import RewardManager, unified_gated_grpo_reward, unified_grpo_reward
 from src.rewards.format import FormatReward, compute_format_reward
 from src.rewards.parser import (
     REQUIRED_INVENTORY_KEYS,
@@ -49,4 +49,6 @@ __all__ = [
     "reward_label_accuracy_weighted",
     "score_acoustic_piece",
     "score_voice_quality_piece",
+    "unified_gated_grpo_reward",
+    "unified_grpo_reward",
 ]

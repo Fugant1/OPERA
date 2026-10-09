@@ -7,6 +7,61 @@ from src.rewards.acoustic import AcousticInventoryReward
 from src.rewards.format import FormatReward
 
 
+def unified_gated_grpo_reward(
+    prompts: List[str],
+    completions: List[str],
+    w_r1: float = 1.5,
+    w_r2: float = 1.0,
+    w_r3: float = 0.2,
+    normalize_weights: bool = True,
+    scale_r2_to_unit: bool = True,
+    r1_reward_func: Optional[Callable] = None,
+    r2_reward_func: Optional[Callable] = None,
+    r3_reward_func: Optional[Callable] = None,
+    **kwargs: Any,
+) -> List[float]:
+    """Computes the unified GRPO reward as a normalized weighted sum of R1, R2, and R3.
+
+    Weights:
+      - R1 (Class-Weighted Accuracy): 1.5
+      - R2 (Acoustic Inventory Grounding): 1.0
+      - R3 (Format & CoT Structure): 0.2
+
+    Formula:
+      R_unified = (1.5 * R1 + 1.0 * R2_norm + 0.2 * R3) / (1.5 + 1.0 + 0.2)
+    """
+    if r1_reward_func is not None:
+        r1_scores = r1_reward_func(prompts, completions, **kwargs)
+    else:
+        r1_scores = [1.0] * len(completions)
+
+    if r2_reward_func is not None:
+        r2_scores = r2_reward_func(prompts, completions, **kwargs)
+    else:
+        r2_scores = [0.0] * len(completions)
+
+    if r3_reward_func is not None:
+        r3_scores = r3_reward_func(prompts, completions, **kwargs)
+    else:
+        r3_scores = [1.0] * len(completions)
+
+    total_weight = (w_r1 + w_r2 + w_r3) if normalize_weights else 1.0
+
+    unified_scores: List[float] = []
+    for r1, r2, r3 in zip(r1_scores, r2_scores, r3_scores):
+        r1_val = float(r1)
+        r2_val = ((float(r2) + 1.0) / 2.0) if scale_r2_to_unit else float(r2)
+        r3_val = float(r3)
+
+        total = (w_r1 * r1_val + w_r2 * r2_val + w_r3 * r3_val) / total_weight
+        unified_scores.append(round(float(total), 4))
+
+    return unified_scores
+
+
+unified_grpo_reward = unified_gated_grpo_reward
+
+
 class RewardManager:
     """Manages multi-objective reward functions for GRPO rollouts."""
 
@@ -15,7 +70,7 @@ class RewardManager:
         class_weights: Optional[Dict[str, float]] = None,
         quantiles_ref: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None,
         audio_lookup: Optional[Dict[str, Dict[str, Any]]] = None,
-        normalize_acoustic: bool = False,
+        normalize_acoustic: bool = True,
     ):
         self.r1_accuracy = ClassWeightedAccuracyReward(class_weights=class_weights)
         self.r2_acoustic = AcousticInventoryReward(
@@ -26,15 +81,38 @@ class RewardManager:
         self.r3_format = FormatReward()
 
     def get_reward_functions(self) -> List[Callable]:
-        """Returns list of callable reward functions compatible with TRL GRPOTrainer.
-
-        TRL GRPOTrainer expects: List[Callable[[prompts, completions, ...], List[float]]]
-        """
+        """Returns list of individual reward functions compatible with TRL GRPOTrainer."""
         return [
             self.r1_accuracy,
             self.r2_acoustic,
             self.r3_format,
         ]
+
+    def get_unified_reward_function(
+        self,
+        w_r1: float = 1.5,
+        w_r2: float = 1.0,
+        w_r3: float = 0.2,
+        normalize_weights: bool = True,
+        scale_r2_to_unit: bool = True,
+    ) -> Callable:
+        """Returns a single unified reward function computing the normalized weighted sum of R1, R2, R3."""
+        def _unified_reward(prompts: List[str], completions: List[str], **kwargs: Any) -> List[float]:
+            return unified_gated_grpo_reward(
+                prompts=prompts,
+                completions=completions,
+                w_r1=w_r1,
+                w_r2=w_r2,
+                w_r3=w_r3,
+                normalize_weights=normalize_weights,
+                scale_r2_to_unit=scale_r2_to_unit,
+                r1_reward_func=self.r1_accuracy,
+                r2_reward_func=self.r2_acoustic,
+                r3_reward_func=self.r3_format,
+                **kwargs,
+            )
+
+        return _unified_reward
 
     def update_class_weights(self, class_weights: Dict[str, float]) -> None:
         """Update R1 class rarity weights."""
