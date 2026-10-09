@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 if TYPE_CHECKING:
     import pandas as pd
 
-from src.rewards.parser import LABEL_SYNONYMS, extract_answer_content
+from src.rewards.parser import LABEL_SYNONYMS, extract_answer_content, parse_completion
 from src.utils.logging import get_logger
 
 logger = get_logger("rewards.accuracy")
@@ -75,9 +75,13 @@ class ClassWeightedAccuracyReward:
             List of float rewards: weight of target class on match, 0.0 otherwise.
         """
         rewards: List[float] = []
-        for comp, target in zip(completions, label):
-            pred_raw = extract_answer_content(comp)
-            pred_norm = LABEL_SYNONYMS.get(pred_raw, pred_raw)
+        parsed_list = kwargs.get("parsed_completions")
+
+        for idx, (comp, target) in enumerate(zip(completions, label)):
+            if parsed_list is not None and idx < len(parsed_list):
+                pred_norm = parsed_list[idx]["answer_norm"]
+            else:
+                pred_norm = parse_completion(comp)["answer_norm"]
 
             target_norm = str(target).lower().strip()
             target_norm = LABEL_SYNONYMS.get(target_norm, target_norm)

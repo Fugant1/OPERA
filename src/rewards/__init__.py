@@ -15,7 +15,7 @@ from src.rewards.acoustic import (
     score_voice_quality_piece,
 )
 from src.rewards.composite import RewardManager, unified_gated_grpo_reward, unified_grpo_reward
-from src.rewards.format import FormatReward, compute_format_reward
+from src.rewards.format import FormatReward, compute_format_reward, reward_format
 from src.rewards.parser import (
     REQUIRED_INVENTORY_KEYS,
     VALID_EMOTIONS,
@@ -23,6 +23,7 @@ from src.rewards.parser import (
     extract_acoustic_inventory,
     extract_answer_content,
     extract_reasoning,
+    parse_completion,
 )
 
 __all__ = [
@@ -45,7 +46,9 @@ __all__ = [
     "extract_acoustic_inventory",
     "extract_answer_content",
     "extract_reasoning",
+    "parse_completion",
     "reward_acoustic_inventory",
+    "reward_format",
     "reward_label_accuracy_weighted",
     "score_acoustic_piece",
     "score_voice_quality_piece",

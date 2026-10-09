@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 if TYPE_CHECKING:
     import pandas as pd
 
-from src.rewards.parser import extract_acoustic_inventory
+from src.rewards.parser import extract_acoustic_inventory, parse_completion
 from src.utils.logging import get_logger
 
 logger = get_logger("rewards.acoustic")
@@ -299,9 +299,13 @@ class AcousticInventoryReward:
 
         speakers = kwargs.get("speaker", [None] * len(completions))
         audio_paths = kwargs.get("audio_path", [None] * len(completions))
+        parsed_list = kwargs.get("parsed_completions")
 
         for idx, comp in enumerate(completions):
-            parsed_inv = extract_acoustic_inventory(comp)
+            if parsed_list is not None and idx < len(parsed_list):
+                parsed_inv = parsed_list[idx]["inventory"]
+            else:
+                parsed_inv = parse_completion(comp)["inventory"]
 
             spk = speakers[idx] if idx < len(speakers) else None
             audio_p = audio_paths[idx] if idx < len(audio_paths) else None

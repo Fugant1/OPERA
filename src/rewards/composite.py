@@ -2,9 +2,14 @@
 
 from typing import Any, Callable, Dict, List, Optional
 
-from src.rewards.accuracy import ClassWeightedAccuracyReward, compute_emotion_weights
-from src.rewards.acoustic import AcousticInventoryReward
-from src.rewards.format import FormatReward
+from src.rewards.accuracy import (
+    ClassWeightedAccuracyReward,
+    compute_emotion_weights,
+    reward_label_accuracy_weighted,
+)
+from src.rewards.acoustic import AcousticInventoryReward, reward_acoustic_inventory
+from src.rewards.format import FormatReward, reward_format
+from src.rewards.parser import parse_completion
 
 
 def unified_gated_grpo_reward(
@@ -22,6 +27,8 @@ def unified_gated_grpo_reward(
 ) -> List[float]:
     """Computes the unified GRPO reward as a normalized weighted sum of R1, R2, and R3.
 
+    Completions are parsed once and cached across R1, R2, and R3.
+
     Weights:
       - R1 (Class-Weighted Accuracy): 1.5
       - R2 (Acoustic Inventory Grounding): 1.0
@@ -30,20 +37,25 @@ def unified_gated_grpo_reward(
     Formula:
       R_unified = (1.5 * R1 + 1.0 * R2_norm + 0.2 * R3) / (1.5 + 1.0 + 0.2)
     """
+    if "parsed_completions" not in kwargs:
+        kwargs["parsed_completions"] = [parse_completion(c) for c in completions]
+
     if r1_reward_func is not None:
         r1_scores = r1_reward_func(prompts, completions, **kwargs)
+    elif "label" in kwargs:
+        r1_scores = reward_label_accuracy_weighted(prompts, completions, **kwargs)
     else:
         r1_scores = [1.0] * len(completions)
 
     if r2_reward_func is not None:
         r2_scores = r2_reward_func(prompts, completions, **kwargs)
     else:
-        r2_scores = [0.0] * len(completions)
+        r2_scores = reward_acoustic_inventory(prompts, completions, normalize=True, **kwargs)
 
     if r3_reward_func is not None:
         r3_scores = r3_reward_func(prompts, completions, **kwargs)
     else:
-        r3_scores = [1.0] * len(completions)
+        r3_scores = reward_format(prompts, completions, **kwargs)
 
     total_weight = (w_r1 + w_r2 + w_r3) if normalize_weights else 1.0
 

@@ -1,7 +1,7 @@
 """Robust output parsing for multi-turn Chain-of-Thought rollouts."""
 
 import re
-from typing import Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 VALID_EMOTIONS: Set[str] = {
     "anger",
@@ -144,3 +144,48 @@ class CompletionParser:
 extract_acoustic_inventory = CompletionParser.extract_acoustic_inventory
 extract_reasoning = CompletionParser.extract_reasoning
 extract_answer_content = CompletionParser.extract_answer_content
+
+
+import functools
+
+@functools.lru_cache(maxsize=8192)
+def parse_completion(completion: str) -> Dict[str, Any]:
+    """Parse estruturado completo da completion em UMA ÚNICA PASSAGEM com cache LRU.
+
+    Centraliza a extração de tags, inventário acústico, raciocínio prosódico e resposta,
+    evitando que múltiplas funções de recompensa repitam regex sobre a mesma string.
+    """
+    if not isinstance(completion, str):
+        completion = str(completion) if completion is not None else ""
+
+    t_open = completion.find("<think>")
+    t_close = completion.find("</think>")
+    a_open = completion.find("<answer>")
+    a_close = completion.find("</answer>")
+
+    has_think = (t_open != -1 and t_close != -1)
+    has_answer = (a_open != -1 and a_close != -1)
+    valid_tag_order = (has_think and has_answer and t_open < t_close < a_open < a_close)
+
+    inventory = extract_acoustic_inventory(completion)
+    valid_slots_count = sum(1 for v in inventory.values() if v is not None)
+
+    reasoning = extract_reasoning(completion)
+
+    answer_raw = extract_answer_content(completion)
+    answer_norm = LABEL_SYNONYMS.get(answer_raw, answer_raw) if "LABEL_SYNONYMS" in globals() else answer_raw
+    is_valid_emotion = answer_norm in VALID_EMOTIONS
+
+    return {
+        "raw": completion,
+        "has_think": has_think,
+        "has_answer": has_answer,
+        "valid_tag_order": valid_tag_order,
+        "inventory": inventory,
+        "valid_slots_count": valid_slots_count,
+        "reasoning": reasoning,
+        "answer_raw": answer_raw,
+        "answer_norm": answer_norm,
+        "is_valid_emotion": is_valid_emotion,
+    }
+

@@ -154,8 +154,15 @@ class SERGRPOPipeline:
         logger.info("--- Step 7: Model & Adapter Initialization ---")
         model, processor = QwenOmniLoader.load_model(config=self.config.model)
 
-        # 8. Dataset Formatting for GRPO
-        train_grpo_ds = SERGRPODataset(train_set, prompt_template=COT_PROMPT).to_hf_dataset()
+        # 8. Dataset Formatting for GRPO (filtered to calibrated top speakers to avoid uncalibrated reward noise)
+        calibrated_speakers = [s for s in speaker_quantiles.keys() if s != "__GLOBAL__"]
+        if hasattr(train_set, "columns") and "speaker" in train_set.columns and calibrated_speakers:
+            train_set_grpo = train_set[train_set["speaker"].isin(calibrated_speakers)].reset_index(drop=True)
+            logger.info("Filtered GRPO train dataset to %d utterances from %d calibrated speakers.", len(train_set_grpo), len(calibrated_speakers))
+        else:
+            train_set_grpo = train_set
+
+        train_grpo_ds = SERGRPODataset(train_set_grpo, prompt_template=COT_PROMPT).to_hf_dataset()
         val_grpo_ds = SERGRPODataset(val_set, prompt_template=COT_PROMPT).to_hf_dataset()
 
         # 9. Launch GRPO Training
