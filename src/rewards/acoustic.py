@@ -163,18 +163,14 @@ def build_acoustic_audio_lookup(
 
 
 def score_acoustic_piece(truth_tier: str, pred_tier: Optional[str]) -> float:
-    """Computes the reward score for an individual continuous acoustic dimension:
+    """Computes the reward score for an individual continuous acoustic dimension in [0.0, 1.0]:
 
-      - Truth High/Low ; Predicted High/Low -> +1.0
-      - Truth High/Low ; Predicted Moderate -> +0.0
-      - Truth Moderate ; Predicted Moderate -> +0.5
-      - Truth High     ; Predicted Low      -> -1.0
-      - Truth Low      ; Predicted High     -> -1.0
-      - Truth Moderate ; Predicted High/Low -> 0.0
-      - Predicted Missing / None            -> -1.0
+      - Truth High/Low ; Predicted High/Low (Extremes Match) -> +1.0
+      - Truth Moderate ; Predicted Moderate (Moderate Match) -> +0.5
+      - Any error (miss, polar inversion, mismatch, missing) ->  0.0
     """
     if pred_tier is None:
-        return -1.0
+        return 0.0
 
     t = truth_tier.lower()
     p = pred_tier.lower()
@@ -182,10 +178,8 @@ def score_acoustic_piece(truth_tier: str, pred_tier: Optional[str]) -> float:
     if t in ("high", "low"):
         if p == t:
             return 1.0
-        elif p == "moderate":
-            return 0.0
         else:
-            return -1.0
+            return 0.0
     elif t == "moderate":
         if p == "moderate":
             return 0.5
@@ -251,17 +245,14 @@ def determine_voice_quality_ground_truth(
 
 
 def score_voice_quality_piece(truth_quality: str, pred_quality: Optional[str]) -> float:
-    """Computes the reward score for the Voice Quality dimension:
+    """Computes the reward score for the Voice Quality dimension in [0.0, 1.0]:
 
       - Truth Marked (pressed/tense, breathy, harsh/creaky) ; Predicted Marked (Match) -> +1.0
-      - Truth Marked ; Predicted modal/normal                                           -> +0.0
-      - Truth Marked ; Predicted Conflicting Marked                                    -> -1.0
-      - Truth modal/normal ; Predicted modal/normal                                     -> +0.5
-      - Truth modal/normal ; Predicted Marked                                          -> 0.0
-      - Predicted Missing / None                                                        -> -1.0
+      - Truth modal/normal ; Predicted modal/normal (Moderate Match)                     -> +0.5
+      - Any error (miss, conflicting marked, modal/marked mismatch, missing)            ->  0.0
     """
     if pred_quality is None:
-        return -1.0
+        return 0.0
 
     t = truth_quality.lower().strip()
     p = pred_quality.lower().strip()
@@ -271,10 +262,8 @@ def score_voice_quality_piece(truth_quality: str, pred_quality: Optional[str]) -
     if t in marked:
         if p == t:
             return 1.0
-        elif p == "modal/normal":
-            return 0.0
         else:
-            return -1.0
+            return 0.0
     elif t == "modal/normal":
         if p == "modal/normal":
             return 0.5

@@ -62,7 +62,7 @@ def unified_gated_grpo_reward(
     unified_scores: List[float] = []
     for r1, r2, r3 in zip(r1_scores, r2_scores, r3_scores):
         r1_val = float(r1)
-        r2_val = ((float(r2) + 1.0) / 2.0) if scale_r2_to_unit else float(r2)
+        r2_val = float(r2)
         r3_val = float(r3)
 
         total = (w_r1 * r1_val + w_r2 * r2_val + w_r3 * r3_val) / total_weight
