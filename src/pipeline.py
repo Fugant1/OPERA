@@ -114,10 +114,23 @@ class SERGRPOPipeline:
             stratify_col="emotion",
         )
 
+        # 5b. Balanced Sampling for Calibrated Top 6 Speakers (GRPO Training Set)
+        logger.info("--- Step 5b: Balanced Sampling for Top 6 Speakers (Excluding Val, 1s-20s, Non-Zero Acoustics) ---")
+        from src.data.sampler import sample_balanced_top_speakers
+
+        grpo_train_set = sample_balanced_top_speakers(
+            train_df=train_set,
+            val_df=val_set,
+            min_duration=1.0,
+            max_duration=20.0,
+            max_neutral_pct=self.config.data.max_neutral_pct,
+            seed=self.config.data.seed,
+        )
+
         # 6. Reward Engineering
         logger.info("--- Step 6: Multi-Objective Reward Configuration ---")
         class_weights = compute_emotion_weights(
-            train_set, power=self.config.reward.smoothing_power
+            grpo_train_set, power=self.config.reward.smoothing_power
         )
         from src.rewards.acoustic import (
             ALL_ACOUSTIC_FEATURES,
@@ -126,7 +139,7 @@ class SERGRPOPipeline:
         )
 
         speaker_quantiles = compute_top_speaker_acoustic_quantiles(
-            raw_train_set, top_n=6, cues_map=ALL_ACOUSTIC_FEATURES
+            raw_train_set, top_n=6, cues_map=ALL_ACOUSTIC_FEATURES, filter_zeroes=True
         )
         audio_lookup = build_acoustic_audio_lookup(
             raw_train_set, features_map=ALL_ACOUSTIC_FEATURES
@@ -142,7 +155,8 @@ class SERGRPOPipeline:
         if not train_model:
             logger.info("Pipeline data preparation, acoustic diagnostics, and reward setup completed successfully.")
             return {
-                "train_set": train_set,
+                "train_set": grpo_train_set,
+                "raw_balanced_train_set": train_set,
                 "val_set": val_set,
                 "class_weights": class_weights,
                 "reward_manager": reward_manager,
@@ -154,15 +168,8 @@ class SERGRPOPipeline:
         logger.info("--- Step 7: Model & Adapter Initialization ---")
         model, processor = QwenOmniLoader.load_model(config=self.config.model)
 
-        # 8. Dataset Formatting for GRPO (filtered to calibrated top speakers to avoid uncalibrated reward noise)
-        calibrated_speakers = [s for s in speaker_quantiles.keys() if s != "__GLOBAL__"]
-        if hasattr(train_set, "columns") and "speaker" in train_set.columns and calibrated_speakers:
-            train_set_grpo = train_set[train_set["speaker"].isin(calibrated_speakers)].reset_index(drop=True)
-            logger.info("Filtered GRPO train dataset to %d utterances from %d calibrated speakers.", len(train_set_grpo), len(calibrated_speakers))
-        else:
-            train_set_grpo = train_set
-
-        train_grpo_ds = SERGRPODataset(train_set_grpo, prompt_template=COT_PROMPT).to_hf_dataset()
+        # 8. Dataset Formatting for GRPO (using balanced top-6 speakers training set)
+        train_grpo_ds = SERGRPODataset(grpo_train_set, prompt_template=COT_PROMPT).to_hf_dataset()
         val_grpo_ds = SERGRPODataset(val_set, prompt_template=COT_PROMPT).to_hf_dataset()
 
         # 9. Launch GRPO Training

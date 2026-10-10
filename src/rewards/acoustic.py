@@ -88,8 +88,12 @@ def compute_top_speaker_acoustic_quantiles(
     df: Any,
     top_n: int = 6,
     cues_map: Dict[str, str] = ALL_ACOUSTIC_FEATURES,
+    filter_zeroes: bool = True,
 ) -> Dict[str, Dict[str, Dict[str, float]]]:
     """Computes the 4 quantiles (quartiles: Q25 and Q75) for the top N most frequent speakers.
+
+    When filter_zeroes is True, excludes 0.0 values (unvoiced/corrupted frames)
+    from quantile calculation to ensure accurate physical grounding.
 
     Quantile divisions:
       - 1st quantile (x <= Q25): Low
@@ -103,12 +107,25 @@ def compute_top_speaker_acoustic_quantiles(
 
     quantiles_dict: Dict[str, Dict[str, Dict[str, float]]] = {}
 
+    strictly_positive_cues = {
+        "F0semitoneFrom27.5Hz_sma3nz_amean",
+        "F0semitoneFrom27.5Hz_sma3nz_pctlrange0-2",
+        "loudness_sma3_percentile50.0",
+        "VoicedSegmentsPerSec",
+        "jitterLocal_sma3nz_amean",
+        "shimmerLocaldB_sma3nz_amean",
+    }
+
     for spk in top_speakers:
         sub = df[df["speaker"] == spk]
         quantiles_dict[spk] = {}
         for cue_name, col_name in cues_map.items():
             if col_name in sub.columns:
                 series = sub[col_name].dropna()
+                if filter_zeroes:
+                    series = series[series != 0.0]
+                    if col_name in strictly_positive_cues:
+                        series = series[series > 0.0]
                 if len(series) > 0:
                     quantiles_dict[spk][cue_name] = {
                         "q25": float(series.quantile(0.25)),
@@ -120,13 +137,17 @@ def compute_top_speaker_acoustic_quantiles(
     for cue_name, col_name in cues_map.items():
         if col_name in df.columns:
             series = df[col_name].dropna()
+            if filter_zeroes:
+                series = series[series != 0.0]
+                if col_name in strictly_positive_cues:
+                    series = series[series > 0.0]
             if len(series) > 0:
                 quantiles_dict["__GLOBAL__"][cue_name] = {
                     "q25": float(series.quantile(0.25)),
                     "q75": float(series.quantile(0.75)),
                 }
 
-    logger.info("Computed acoustic quartiles for top %d speakers: %s", len(top_speakers), top_speakers)
+    logger.info("Computed acoustic quartiles for top %d speakers (filter_zeroes=%s): %s", len(top_speakers), filter_zeroes, top_speakers)
     return quantiles_dict
 
 
